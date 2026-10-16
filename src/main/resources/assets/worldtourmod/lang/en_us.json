@@ -1,4 +1,6 @@
 {
   "item.worldtourmod.test_item": "Test Item",
-  "item.worldtourmod.tour_wand": "Tour Wand"
+  "item.worldtourmod.tour_wand": "Tour Wand",
+  "creativemodetab.worldtourmod.tour_items": "Tour Items",
+  "creativemodetab.worldtourmod.tour_blocks": "Tour Blocks"
 }

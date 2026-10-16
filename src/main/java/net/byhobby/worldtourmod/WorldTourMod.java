@@ -1,5 +1,6 @@
 package net.byhobby.worldtourmod;
 
+import net.byhobby.worldtourmod.creativemodtab.ModeCreativeTabs;
 import net.byhobby.worldtourmod.item.ModItems;
 import net.fabricmc.api.ModInitializer;
 
@@ -16,6 +17,8 @@ public class WorldTourMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("Initializing " + WorldTourMod.MOD_ID + "...");
+
+		ModeCreativeTabs.registerModCreativeModeTabs();
 		ModItems.registerModItems();
 	}
 
