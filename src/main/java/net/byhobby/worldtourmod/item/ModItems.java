@@ -18,6 +18,10 @@ public class ModItems {
             "test_item",
             Item::new
     );
+    public static final Item TOUR_WAND = registerItem(
+            "tour_wand",
+            Item::new
+    );
 
     private static Item registerItem(String name, Function<Item.Properties, Item> function) {
         return Registry.register(
@@ -31,6 +35,9 @@ public class ModItems {
 
         CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output ->
             output.accept(TEST_ITEM)
+        );
+        CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output ->
+                output.accept(TOUR_WAND)
         );
     }
 }
