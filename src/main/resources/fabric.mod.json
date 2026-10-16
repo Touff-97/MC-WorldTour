@@ -3,15 +3,15 @@
 	"id": "worldtourmod",
 	"version": "${version}",
 	"name": "World Tour Mod",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "This mod is made to specifically stage an automated world tour for Etho's massive world, but could apply to others",
 	"authors": [
-		"Me!"
+		"Touff-97"
 	],
 	"contact": {
 		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"sources": "https://github.com/Touff-97/MC-WorldTour"
 	},
-	"license": "CC0-1.0",
+	"license": "MIT-License",
 	"icon": "assets/worldtourmod/icon.png",
 	"environment": "*",
 	"entrypoints": {
