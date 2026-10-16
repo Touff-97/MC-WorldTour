@@ -1,5 +1,6 @@
 package net.byhobby.worldtourmod;
 
+import net.byhobby.worldtourmod.item.ModItems;
 import net.fabricmc.api.ModInitializer;
 
 import net.minecraft.resources.Identifier;
@@ -14,7 +15,8 @@ public class WorldTourMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
-		LOGGER.info("Hello Fabric world!");
+		LOGGER.info("Initializing " + WorldTourMod.MOD_ID + "...");
+		ModItems.registerModItems();
 	}
 
 	public static Identifier id(String path) {
