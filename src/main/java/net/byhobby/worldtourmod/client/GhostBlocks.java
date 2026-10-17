@@ -1,15 +1,15 @@
-package net.byhobby.worldtourmod.client; // or any package you like
+package net.byhobby.worldtourmod.client;
 
+import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.data.PathData;
+import net.byhobby.worldtourmod.data.PathRouter;
 import net.byhobby.worldtourmod.data.PathStore;
 import net.byhobby.worldtourmod.data.Pos;
-import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.item.custom.ComplexTestItem;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -18,39 +18,48 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
-import java.io.IOException;
 import java.util.*;
 
 public final class GhostBlocks {
-    private static final int RADIUS = 64;          // only show ghosts this close to the player
-    private static final int INTERVAL = 5;         // ticks between refreshes
-    private static final int RESEND_EVERY = 8;     // full resend every N refreshes (repairs reverted ghosts)
-    private static final int Y_OFFSET = 1;         // 1 = draw on top of the clicked block, 0 = replace it visually
+    private static final int RADIUS = 64;
+    private static final int INTERVAL = 5;
+    private static final int RESEND_EVERY = 8;
+    private static final int Y_OFFSET = 0; // 0 = ghosts replace the clicked block visually
 
     private static final BlockState NODE = Blocks.GOLD_BLOCK.defaultBlockState();
     private static final BlockState LINK = Blocks.IRON_BLOCK.defaultBlockState();
 
     private record Sent(String dim, Map<BlockPos, BlockState> blocks) {}
+    private record DraftCache(List<BlockPos> nodes, int version, Map<BlockPos, BlockState> ghosts) {}
 
     private static final Map<UUID, Sent> SENT = new HashMap<>();
+    private static final Map<UUID, DraftCache> DRAFTS = new HashMap<>();
+
     private static Map<String, Map<BlockPos, BlockState>> savedCache = null; // dim -> ghosts
+    private static Map<String, Set<BlockPos>> occupiedCache = null;          // dim -> used blocks
+    private static int version = 0;
     private static int tick = 0;
 
     private GhostBlocks() {}
 
     public static void register() {
         ServerTickEvents.END_SERVER_TICK.register(GhostBlocks::onTick);
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
-                SENT.remove(handler.getPlayer().getUUID()));
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            SENT.remove(handler.getPlayer().getUUID());
+            DRAFTS.remove(handler.getPlayer().getUUID());
+        });
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             SENT.clear();
-            savedCache = null;
+            DRAFTS.clear();
+            invalidate();
         });
     }
 
-    /** Call after saving or deleting a path so the cache is rebuilt. */
+    /** Call after saving or deleting a path. */
     public static void invalidate() {
         savedCache = null;
+        occupiedCache = null;
+        version++;
     }
 
     // ---------- Tick ----------
@@ -73,25 +82,20 @@ public final class GhostBlocks {
 
         Sent prev = SENT.get(player.getUUID());
         if (prev != null && !prev.dim().equals(dim)) {
-            SENT.remove(player.getUUID()); // changed dimension: old ghosts are gone with the old level
+            SENT.remove(player.getUUID());
             prev = null;
         }
         Map<BlockPos, BlockState> old = prev == null ? Map.of() : prev.blocks();
 
         ItemStack tool = heldTool(player);
         Map<BlockPos, BlockState> desired = tool == null ? Map.of() : buildDesired(player, tool, dim);
+        if (tool == null) DRAFTS.remove(player.getUUID());
 
-        // Restore real blocks where ghosts disappeared
         for (BlockPos pos : old.keySet()) {
-            if (!desired.containsKey(pos)) {
-                send(player, pos, level.getBlockState(pos));
-            }
+            if (!desired.containsKey(pos)) send(player, pos, level.getBlockState(pos));
         }
-        // Send new / changed ghosts (everything, on a full resend)
         for (var e : desired.entrySet()) {
-            if (full || !e.getValue().equals(old.get(e.getKey()))) {
-                send(player, e.getKey(), e.getValue());
-            }
+            if (full || !e.getValue().equals(old.get(e.getKey()))) send(player, e.getKey(), e.getValue());
         }
 
         if (desired.isEmpty()) SENT.remove(player.getUUID());
@@ -113,99 +117,64 @@ public final class GhostBlocks {
     // ---------- Building the ghost map ----------
 
     private static Map<BlockPos, BlockState> buildDesired(ServerPlayer player, ItemStack tool, String dim) {
+        ensureCache();
         Map<BlockPos, BlockState> out = new HashMap<>();
         BlockPos center = player.blockPosition();
         double max = (double) RADIUS * RADIUS;
 
-        for (var e : savedFor(dim).entrySet()) {
-            if (e.getKey().distSqr(center) <= max) out.put(e.getKey(), e.getValue());
-        }
+        addNear(out, savedCache.getOrDefault(dim, Map.of()), center, max);
 
-        // Path currently being drawn on this stack
         List<BlockPos> draft = tool.get(ModDataComponents.PATH_POINTS);
         if (draft != null && !draft.isEmpty()) {
-            merge(out, rasterize(draft));
+            addNear(out, draftGhosts(player.getUUID(), draft, dim), center, max);
+        } else {
+            DRAFTS.remove(player.getUUID());
         }
         return out;
     }
 
-    private static Map<BlockPos, BlockState> savedFor(String dim) {
-        if (savedCache == null) {
-            savedCache = new HashMap<>();
-            try {
-                for (PathData p : PathStore.loadPaths()) {
-                    if (p.points().isEmpty()) continue;
-                    String pathDim = p.points().getFirst().dim();
-                    List<BlockPos> nodes = new ArrayList<>();
-                    for (Pos pt : p.points()) nodes.add(new BlockPos(pt.x(), pt.y(), pt.z()));
-                    merge(savedCache.computeIfAbsent(pathDim, d -> new HashMap<>()), rasterize(nodes));
+    private static void addNear(Map<BlockPos, BlockState> target, Map<BlockPos, BlockState> source,
+                                BlockPos center, double maxDistSqr) {
+        for (var e : source.entrySet()) {
+            if (e.getKey().distSqr(center) <= maxDistSqr) target.put(e.getKey(), e.getValue());
+        }
+    }
+
+    /** Routes the in-progress path; cached until the draft or the saved paths change. */
+    private static Map<BlockPos, BlockState> draftGhosts(UUID id, List<BlockPos> nodes, String dim) {
+        DraftCache c = DRAFTS.get(id);
+        if (c != null && c.version() == version && c.nodes().equals(nodes)) return c.ghosts();
+
+        PathRouter.Result r = PathRouter.routeAll(nodes, occupiedCache.getOrDefault(dim, Set.of()));
+        Map<BlockPos, BlockState> g = new HashMap<>();
+        for (BlockPos b : r.blocks()) g.put(b.above(Y_OFFSET), LINK);
+        for (BlockPos n : nodes) g.put(n.above(Y_OFFSET), NODE);
+
+        DRAFTS.put(id, new DraftCache(List.copyOf(nodes), version, g));
+        return g;
+    }
+
+    private static void ensureCache() {
+        if (savedCache != null) return;
+        savedCache = new HashMap<>();
+        occupiedCache = new HashMap<>();
+        try {
+            for (PathData p : PathStore.loadPaths()) {
+                if (p.points() == null || p.points().isEmpty()) continue;
+                String d = p.first().dim();
+                Map<BlockPos, BlockState> ghosts = savedCache.computeIfAbsent(d, k -> new HashMap<>());
+                Set<BlockPos> occ = occupiedCache.computeIfAbsent(d, k -> new HashSet<>());
+
+                for (BlockPos b : PathStore.blocksOf(p)) {
+                    ghosts.put(b.above(Y_OFFSET), LINK);
+                    occ.add(b);
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+                for (Pos pt : p.points()) {
+                    ghosts.put(new BlockPos(pt.x(), pt.y(), pt.z()).above(Y_OFFSET), NODE);
+                }
             }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-        return savedCache.getOrDefault(dim, Map.of());
-    }
-
-    private static void merge(Map<BlockPos, BlockState> target, Map<BlockPos, BlockState> source) {
-        // gold (node) always wins over iron (link)
-        source.forEach((k, v) -> target.merge(k, v, (a, b) -> a.equals(NODE) ? a : b));
-    }
-
-    // ---------- Rasterizing ----------
-
-    static Map<BlockPos, BlockState> rasterize(List<BlockPos> nodes) {
-        Map<BlockPos, BlockState> out = new HashMap<>();
-        for (int i = 1; i < nodes.size(); i++) {
-            for (BlockPos p : route(nodes.get(i - 1), nodes.get(i))) {
-                out.put(p.above(Y_OFFSET), LINK);
-            }
-        }
-        for (BlockPos n : nodes) {
-            out.put(n.above(Y_OFFSET), NODE);
-        }
-        return out;
-    }
-
-    /** Blocks strictly between a and b, following rail rules. */
-    static List<BlockPos> route(BlockPos a, BlockPos b) {
-        List<BlockPos> out = new ArrayList<>();
-        int dx = b.getX() - a.getX();
-        int dz = b.getZ() - a.getZ();
-        int dy = b.getY() - a.getY();
-
-        // Horizontal steps: all X first, then all Z (a single corner)
-        List<Direction> dirs = new ArrayList<>();
-        for (int i = 0; i < Math.abs(dx); i++) dirs.add(dx > 0 ? Direction.EAST : Direction.WEST);
-        for (int i = 0; i < Math.abs(dz); i++) dirs.add(dz > 0 ? Direction.SOUTH : Direction.NORTH);
-
-        BlockPos cur = a;
-        for (int i = 0; i < dirs.size(); i++) {
-            Direction d = dirs.get(i);
-            cur = cur.relative(d);
-
-            // A block that is a corner (next step turns) must stay flat.
-            boolean canSlope = i == dirs.size() - 1 || dirs.get(i + 1) == d;
-            if (dy != 0 && canSlope) {
-                int s = Integer.signum(dy);
-                cur = cur.offset(0, s, 0);
-                dy -= s;
-            }
-            out.add(cur);
-        }
-
-        // Leftover height: vertical column
-        while (dy != 0) {
-            int s = Integer.signum(dy);
-            cur = cur.offset(0, s, 0);
-            dy -= s;
-            out.add(cur);
-        }
-
-        // The last block is b itself; it gets drawn as a node
-        if (!out.isEmpty() && out.getLast().equals(b)) {
-            out.removeLast();
-        }
-        return out;
     }
 }

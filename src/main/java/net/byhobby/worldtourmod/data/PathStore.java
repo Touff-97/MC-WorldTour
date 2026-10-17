@@ -3,13 +3,12 @@ package net.byhobby.worldtourmod.data;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.core.BlockPos;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Stream;
 
 public final class PathStore {
@@ -85,5 +84,25 @@ public final class PathStore {
             }
         }
         return newlyActive;
+    }
+
+    /** Every block used by saved paths in the given dimension. */
+    public static Set<BlockPos> occupied(String dim) throws IOException {
+        Set<BlockPos> out = new HashSet<>();
+        for (PathData p : loadPaths()) {
+            if (p.points() == null || p.points().isEmpty() || !p.first().dim().equals(dim)) continue;
+            out.addAll(blocksOf(p));
+        }
+        return out;
+    }
+
+    public static List<BlockPos> blocksOf(PathData p) {
+        List<BlockPos> out = new ArrayList<>();
+        if (p.blocks() != null) {
+            for (int[] c : p.blocks()) out.add(new BlockPos(c[0], c[1], c[2]));
+        } else { // file without a stored route: nodes only
+            for (Pos pt : p.points()) out.add(new BlockPos(pt.x(), pt.y(), pt.z()));
+        }
+        return out;
     }
 }

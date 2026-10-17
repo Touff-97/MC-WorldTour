@@ -4,10 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.byhobby.worldtourmod.client.GhostBlocks;
 import net.byhobby.worldtourmod.component.ModDataComponents;
-import net.byhobby.worldtourmod.data.PathData;
-import net.byhobby.worldtourmod.data.PathStore;
-import net.byhobby.worldtourmod.data.Pos;
-import net.byhobby.worldtourmod.data.TransitionData;
+import net.byhobby.worldtourmod.data.*;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -74,7 +71,7 @@ public class ComplexTestItem extends Item {
         if (!level.isClientSide()) {
             BlockPos pos = context.getClickedPos();
             switch (getMode(stack)) {
-                case CREATE_PATH -> addPathPoint(player, stack, pos);
+                case CREATE_PATH -> addPathPoint(level, player, stack, pos);
                 case CREATE_TRANSITION -> addTransitionPoint(level, player, stack, pos);
             }
         }
@@ -83,14 +80,41 @@ public class ComplexTestItem extends Item {
 
     // ---------- create_path ----------
 
-    private static void addPathPoint(Player player, ItemStack stack, BlockPos pos) {
+    private static void addPathPoint(Level level, Player player, ItemStack stack, BlockPos pos) {
         List<BlockPos> path = new ArrayList<>(stack.getOrDefault(ModDataComponents.PATH_POINTS, List.of()));
+
+        try {
+            String error = checkNext(path, pos, PathStore.occupied(dimensionOf(level)));
+            if (error != null) {
+                say(player, error, true);
+                return;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            say(player, "Could not read saved paths", true);
+            return;
+        }
+
         path.add(pos.immutable());
         stack.set(ModDataComponents.PATH_POINTS, List.copyOf(path));
-
         say(player, path.size() == 1
                 ? "Path started at " + pos.toShortString()
                 : "Point " + path.size() + " added: " + pos.toShortString(), true);
+    }
+
+    /** null = `next` can be appended to `nodes`; otherwise the reason it can't. */
+    private static String checkNext(List<BlockPos> nodes, BlockPos next, Set<BlockPos> saved) {
+        Set<BlockPos> occ = new HashSet<>(saved);
+        occ.addAll(PathRouter.routeAll(nodes, saved).blocks()); // saved paths + the draft so far
+        BlockPos last = nodes.isEmpty() ? null : nodes.get(nodes.size() - 1);
+
+        if (PathRouter.isBlocked(next, occ, last)) {
+            return "Blocked: already part of a path, or directly above/below one.";
+        }
+        if (last != null && PathRouter.findSegment(last, next, occ) == null) {
+            return "No valid route to that block.";
+        }
+        return null;
     }
 
     private static void finishPath(Level level, Player player, ItemStack stack, BlockPos lastPos) {
@@ -101,20 +125,34 @@ public class ComplexTestItem extends Item {
         }
 
         String dim = dimensionOf(level);
-        List<Pos> points = new ArrayList<>();
-        for (BlockPos p : existing) points.add(new Pos(dim, p.getX(), p.getY(), p.getZ()));
-        points.add(new Pos(dim, lastPos.getX(), lastPos.getY(), lastPos.getZ()));
-
-        PathData data = new PathData(newId("path"), points);
         try {
+            Set<BlockPos> saved = PathStore.occupied(dim);
+            String error = checkNext(existing, lastPos, saved);
+            if (error != null) {
+                say(player, error, true);
+                return;
+            }
+
+            List<BlockPos> nodes = new ArrayList<>(existing);
+            nodes.add(lastPos.immutable());
+            PathRouter.Result route = PathRouter.routeAll(nodes, saved);
+            if (!route.complete()) {
+                say(player, "Route no longer valid. Sneak + left click to cancel the path.", true);
+                return;
+            }
+
+            List<Pos> points = nodes.stream().map(p -> new Pos(dim, p.getX(), p.getY(), p.getZ())).toList();
+            List<int[]> blocks = route.blocks().stream().map(p -> new int[]{p.getX(), p.getY(), p.getZ()}).toList();
+            PathData data = new PathData(newId("path"), points, blocks);
+
             PathStore.save(data);
             GhostBlocks.invalidate();
             stack.remove(ModDataComponents.PATH_POINTS);
-            say(player, "Path saved (" + points.size() + " points): " + data.id(), false);
+            say(player, "Path saved (" + points.size() + " nodes, " + blocks.size() + " blocks): " + data.id(), false);
             reportRelink(player);
         } catch (IOException e) {
             e.printStackTrace();
-            say(player, "Failed to save path!", false); // path stays on the stack
+            say(player, "Failed to save path!", false); // draft stays on the stack
         }
     }
 
@@ -160,7 +198,16 @@ public class ComplexTestItem extends Item {
 
         if (!level.isClientSide()) {
             switch (getMode(stack)) {
-                case CREATE_PATH -> finishPath(level, player, stack, pos);
+                case CREATE_PATH -> {
+                    if (player.isShiftKeyDown()) {
+                        if (stack.has(ModDataComponents.PATH_POINTS)) {
+                            stack.remove(ModDataComponents.PATH_POINTS);
+                            say(player, "Path cancelled", true);
+                        }
+                    } else {
+                        finishPath(level, player, stack, pos);
+                    }
+                }
                 case CREATE_TRANSITION -> {
                     if (stack.has(ModDataComponents.TRANSITION_DRAFT)) {
                         stack.remove(ModDataComponents.TRANSITION_DRAFT);
