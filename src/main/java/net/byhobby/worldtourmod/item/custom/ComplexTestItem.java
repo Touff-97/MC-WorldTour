@@ -73,6 +73,8 @@ public class ComplexTestItem extends Item {
             switch (getMode(stack)) {
                 case CREATE_PATH -> addPathPoint(level, player, stack, pos);
                 case CREATE_TRANSITION -> addTransitionPoint(level, player, stack, pos);
+                case CREATE_START -> setTourBound(level, player, pos, true);
+                case CREATE_FINISH -> setTourBound(level, player, pos, false);
             }
         }
         return InteractionResult.SUCCESS;
@@ -186,6 +188,31 @@ public class ComplexTestItem extends Item {
         } catch (IOException e) {
             e.printStackTrace();
             say(player, "Failed to save transition!", false);
+        }
+    }
+
+    // ---------- create_start / create_finish ----------
+
+    private static void setTourBound(Level level, Player player, BlockPos pos, boolean start) {
+        String dim = dimensionOf(level);
+        Pos at = new Pos(dim, pos.getX(), pos.getY(), pos.getZ());
+        try {
+            boolean valid = PathStore.loadPaths().stream()
+                    .filter(p -> p.points() != null && !p.points().isEmpty())
+                    .anyMatch(p -> (start ? p.first() : p.last()).equals(at));
+            if (!valid) {
+                say(player, start ? "The start must be the FIRST node of a saved path."
+                        : "The finish must be the LAST node of a saved path.", true);
+                return;
+            }
+
+            TourBounds old = TourStore.get();
+            TourStore.save(start ? new TourBounds(at, old.finish()) : new TourBounds(old.start(), at));
+            GhostBlocks.invalidate();
+            say(player, (start ? "Tour start" : "Tour finish") + " set at " + pos.toShortString(), true);
+        } catch (IOException e) {
+            e.printStackTrace();
+            say(player, "Failed to save tour bounds!", false);
         }
     }
 

@@ -2,7 +2,9 @@ package net.byhobby.worldtourmod.item.custom;
 
 public enum ToolMode {
     CREATE_PATH("create_path"),
-    CREATE_TRANSITION("create_transition");
+    CREATE_TRANSITION("create_transition"),
+    CREATE_START("create_start"),
+    CREATE_FINISH("create_finish");
 
     public final String id;
 

@@ -21,6 +21,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import java.util.*;
 
 public final class GhostBlocks {
+    private static final int TOUR_RADIUS = 128; // matches minecart tracking range
     private static final int RADIUS = 64;
     private static final int INTERVAL = 5;
     private static final int RESEND_EVERY = 8;
@@ -57,6 +58,7 @@ public final class GhostBlocks {
 
     /** Call after saving or deleting a path. */
     public static void invalidate() {
+        TourMarker.invalidate();
         savedCache = null;
         occupiedCache = null;
         version++;
@@ -88,8 +90,13 @@ public final class GhostBlocks {
         Map<BlockPos, BlockState> old = prev == null ? Map.of() : prev.blocks();
 
         ItemStack tool = heldTool(player);
-        Map<BlockPos, BlockState> desired = tool == null ? Map.of() : buildDesired(player, tool, dim);
-        if (tool == null) DRAFTS.remove(player.getUUID());
+        Map<BlockPos, BlockState> desired = new HashMap<>();
+        if (tool != null) desired.putAll(buildDesired(player, tool, dim));
+        else DRAFTS.remove(player.getUUID());
+
+        // Tour start/finish rails: everyone sees them, and they win over path ghosts
+        addNear(desired, TourMarker.layout().rails().getOrDefault(dim, Map.of()),
+                player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
 
         for (BlockPos pos : old.keySet()) {
             if (!desired.containsKey(pos)) send(player, pos, level.getBlockState(pos));
