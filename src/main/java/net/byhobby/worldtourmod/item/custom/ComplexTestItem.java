@@ -2,111 +2,201 @@ package net.byhobby.worldtourmod.item.custom;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import net.byhobby.worldtourmod.WorldTourMod;
+import net.byhobby.worldtourmod.component.ModDataComponents;
+import net.byhobby.worldtourmod.data.PathData;
+import net.byhobby.worldtourmod.data.PathStore;
+import net.byhobby.worldtourmod.data.Pos;
+import net.byhobby.worldtourmod.data.TransitionData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.storage.LevelResource;
+
 import net.minecraft.core.Direction;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 
 public class ComplexTestItem extends Item {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    // One in-progress path per player (server side only)
-    private static final Map<UUID, List<BlockPos>> ACTIVE_PATHS = new HashMap<>();
-
     public ComplexTestItem(Properties properties) {
         super(properties);
+    }
+
+    // Tool Mode
+    public static ToolMode getMode(ItemStack stack) {
+        return ToolMode.byOrdinal(stack.getOrDefault(ModDataComponents.TOOL_MODE, 0));
+    }
+
+    private static void cycleMode(Level level, Player player, ItemStack stack) {
+        if (level.isClientSide()) return;
+        ToolMode next = getMode(stack).next();
+        stack.set(ModDataComponents.TOOL_MODE, next.ordinal());
+        say(player, "Mode: " + next.id, true);
+    }
+
+    // ---------- Right click ----------
+
+    // Air
+    @Override
+    public InteractionResult use(Level level, Player player, InteractionHand hand) {
+        if (player.isShiftKeyDown()) {
+            cycleMode(level, player, player.getItemInHand(hand));
+            return InteractionResult.SUCCESS;
+        }
+        return super.use(level, player, hand);
+    }
+
+    // Block
+    @Override
+    public InteractionResult useOn(UseOnContext context) {
+        Level level = context.getLevel();
+        Player player = context.getPlayer();
+        ItemStack stack = context.getItemInHand();
+        if (player == null) return InteractionResult.PASS;
+
+        if (player.isShiftKeyDown()) {
+            cycleMode(level, player, stack);
+            return InteractionResult.SUCCESS;
+        }
+
+        if (!level.isClientSide()) {
+            BlockPos pos = context.getClickedPos();
+            switch (getMode(stack)) {
+                case CREATE_PATH -> addPathPoint(player, stack, pos);
+                case CREATE_TRANSITION -> addTransitionPoint(level, player, stack, pos);
+            }
+        }
+        return InteractionResult.SUCCESS;
+    }
+
+    // ---------- create_path ----------
+
+    private static void addPathPoint(Player player, ItemStack stack, BlockPos pos) {
+        List<BlockPos> path = new ArrayList<>(stack.getOrDefault(ModDataComponents.PATH_POINTS, List.of()));
+        path.add(pos.immutable());
+        stack.set(ModDataComponents.PATH_POINTS, List.copyOf(path));
+
+        say(player, path.size() == 1
+                ? "Path started at " + pos.toShortString()
+                : "Point " + path.size() + " added: " + pos.toShortString(), true);
+    }
+
+    private static void finishPath(Level level, Player player, ItemStack stack, BlockPos lastPos) {
+        List<BlockPos> existing = stack.get(ModDataComponents.PATH_POINTS);
+        if (existing == null || existing.isEmpty()) {
+            say(player, "No active path. Right click a block first.", true);
+            return;
+        }
+
+        String dim = dimensionOf(level);
+        List<Pos> points = new ArrayList<>();
+        for (BlockPos p : existing) points.add(new Pos(dim, p.getX(), p.getY(), p.getZ()));
+        points.add(new Pos(dim, lastPos.getX(), lastPos.getY(), lastPos.getZ()));
+
+        PathData data = new PathData(newId("path"), points);
+        try {
+            PathStore.save(data);
+            stack.remove(ModDataComponents.PATH_POINTS);
+            say(player, "Path saved (" + points.size() + " points): " + data.id(), false);
+            reportRelink(player);
+        } catch (IOException e) {
+            e.printStackTrace();
+            say(player, "Failed to save path!", false); // path stays on the stack
+        }
+    }
+
+    // ---------- create_transition ----------
+
+    private static void addTransitionPoint(Level level, Player player, ItemStack stack, BlockPos pos) {
+        List<BlockPos> draft = new ArrayList<>(stack.getOrDefault(ModDataComponents.TRANSITION_DRAFT, List.of()));
+        draft.add(pos.immutable());
+
+        if (draft.size() < 2) {
+            stack.set(ModDataComponents.TRANSITION_DRAFT, List.copyOf(draft));
+            say(player, "Transition exit set at " + pos.toShortString() + ". Now click the entrance.", true);
+            return;
+        }
+
+        String dim = dimensionOf(level); // see implementation, currently does nothing
+        BlockPos a = draft.get(0), b = draft.get(1);
+
+        TransitionData t = new TransitionData();
+        t.id = newId("transition");
+        t.from = new Pos(dimensionOfDraftStart(dim), a.getX(), a.getY(), a.getZ());
+        t.to = new Pos(dim, b.getX(), b.getY(), b.getZ());
+        t.active = false;
+
+        try {
+            PathStore.save(t);
+            stack.remove(ModDataComponents.TRANSITION_DRAFT);
+            List<TransitionData> activated = PathStore.relink();
+            boolean nowActive = activated.stream().anyMatch(x -> x.id.equals(t.id));
+            say(player, "Transition " + t.id + (nowActive ? " saved and ACTIVE" : " saved (inactive, waiting for paths)"), false);
+        } catch (IOException e) {
+            e.printStackTrace();
+            say(player, "Failed to save transition!", false);
+        }
+    }
+
+    // ---------- Left click on block ----------
+
+    public static InteractionResult onAttackBlock(Player player, Level level, InteractionHand hand,
+                                                  BlockPos pos, Direction direction) {
+        ItemStack stack = player.getItemInHand(hand);
+        if (!(stack.getItem() instanceof ComplexTestItem)) return InteractionResult.PASS;
+
+        if (!level.isClientSide()) {
+            switch (getMode(stack)) {
+                case CREATE_PATH -> finishPath(level, player, stack, pos);
+                case CREATE_TRANSITION -> {
+                    if (stack.has(ModDataComponents.TRANSITION_DRAFT)) {
+                        stack.remove(ModDataComponents.TRANSITION_DRAFT);
+                        say(player, "Transition cancelled", true);
+                    }
+                }
+            }
+        }
+        return InteractionResult.SUCCESS; // never break blocks with this item
+    }
+
+    // ---------- Helpers ----------
+
+    private static void reportRelink(Player player) {
+        try {
+            List<TransitionData> activated = PathStore.relink();
+            for (TransitionData t : activated) {
+                say(player, "Transition " + t.id + " is now ACTIVE", false);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static String dimensionOf(Level level) {
+        return level.dimension().identifier().toString(); // was .location() before 26.x
+    }
+
+    // Placeholder, more work is needed to get cross dimension travel
+    private static String dimensionOfDraftStart(String currentDim) { return currentDim; }
+
+    private static String newId(String prefix) {
+        return prefix + "_" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     private static void say(Player player, String text, boolean actionBar) {
         if (player instanceof ServerPlayer sp) {
             sp.sendSystemMessage(Component.literal(text), actionBar);
-        }
-    }
-
-    // Right click on air
-    @Override
-    public InteractionResult use(Level level, Player player, InteractionHand hand) {
-        say(player, "Right-click", true);
-        return super.use(level, player, hand);
-    }
-
-    // Right click on block: start the path / add a point
-    @Override
-    public InteractionResult useOn(UseOnContext context) {
-        Level level = context.getLevel();
-        Player player = context.getPlayer();
-
-        say(player, "Right-click on", true);
-
-        if (!level.isClientSide() && player != null) {
-            BlockPos pos = context.getClickedPos();
-            List<BlockPos> path = ACTIVE_PATHS.computeIfAbsent(player.getUUID(), id -> new ArrayList<>());
-            path.add(pos.immutable());
-
-            WorldTourMod.LOGGER.info("Added a point to path: " + path);
-
-            String msg = path.size() == 1
-                    ? "Path started at " + pos.toShortString()
-                    : "Point " + path.size() + " added: " + pos.toShortString();
-            say(player, msg, true);
-        }
-        return InteractionResult.SUCCESS;
-    }
-
-    // Left click on block: add last point, close and save
-    public static InteractionResult onAttackBlock(Player player, Level level, InteractionHand hand, BlockPos pos, Direction direction) {
-        say(player, "Left-click", true);
-
-        if (hand != InteractionHand.MAIN_HAND
-                || !(player.getMainHandItem().getItem() instanceof ComplexTestItem)) {
-            return InteractionResult.PASS; // normal behavior for other items
-        }
-
-        if (!level.isClientSide()) {
-            List<BlockPos> path = ACTIVE_PATHS.remove(player.getUUID());
-            WorldTourMod.LOGGER.info("Getting ready to close path: " + path);
-            if (path == null || path.isEmpty()) {
-                say(player, "No active path. Right-click a block first.", true);
-            } else {
-                path.add(pos.immutable());
-                savePath(level.getServer(), path, player);
-                WorldTourMod.LOGGER.info("Final path is: " + path);
-            }
-        }
-        return InteractionResult.SUCCESS; // cancels block breaking
-    }
-
-    private static void savePath(MinecraftServer server, List<BlockPos> path, Player player) {
-        if (server == null) return;
-
-        List<int[]> data = path.stream().map(p -> new int[]{p.getX(), p.getY(), p.getZ()}).toList();
-        String name = "path_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".json";
-        Path dir = server.getWorldPath(LevelResource.ROOT).resolve("worldtour_paths");
-
-        try {
-            Files.createDirectories(dir);
-            Files.writeString(dir.resolve(name), GSON.toJson(data));
-            say(player, "Path saved (" + path.size() + " points): " + name, true);
-        } catch (IOException e) {
-            e.printStackTrace();
-            say(player, "Failed to save path!", true);
         }
     }
 }
