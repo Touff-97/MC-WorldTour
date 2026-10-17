@@ -19,6 +19,7 @@ public class ModeCreativeTabs {
                     .title(Component.translatable("creativemodetab.worldtourmod.tour_items"))
                     .displayItems((parameters, output) -> {
                         output.accept(ModItems.TOUR_WAND);
+                        output.accept(ModItems.COMPLEX_TEST_ITEM);
                     })
                     .build()
         );

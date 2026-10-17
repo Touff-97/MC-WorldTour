@@ -1,6 +1,7 @@
 package net.byhobby.worldtourmod.item;
 
 import net.byhobby.worldtourmod.WorldTourMod;
+import net.byhobby.worldtourmod.item.custom.ComplexTestItem;
 import net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -22,6 +23,10 @@ public class ModItems {
             "tour_wand",
             Item::new
     );
+    public static final Item COMPLEX_TEST_ITEM = registerItem(
+            "complex_test_item",
+            ComplexTestItem::new
+    );
 
     private static Item registerItem(String name, Function<Item.Properties, Item> function) {
         return Registry.register(
@@ -33,11 +38,10 @@ public class ModItems {
     public static void registerModItems() {
         WorldTourMod.LOGGER.info("Registering Mod Items for " + WorldTourMod.MOD_ID);
 
-        CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output ->
-            output.accept(TEST_ITEM)
-        );
-        CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output ->
-                output.accept(TOUR_WAND)
-        );
+        CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output -> {
+            output.accept(COMPLEX_TEST_ITEM);
+            output.accept(TEST_ITEM);
+            output.accept(TOUR_WAND);
+        });
     }
 }

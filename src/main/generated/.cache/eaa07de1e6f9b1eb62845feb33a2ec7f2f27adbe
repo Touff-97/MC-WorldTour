@@ -1,5 +1,7 @@
 // 26.3	-999999999-01-01T00:00:00	World Tour Mod/Model Definitions
+f7c1fd670508a360e02c9824c5e583e051251238 assets/worldtourmod/items/complex_test_item.json
 982f9e7e0d124856b77051d47919ea0765761f9f assets/worldtourmod/items/test_item.json
 446afb2d017a84e0b8e6ac4ef3f0e89a297a78d8 assets/worldtourmod/items/tour_wand.json
+b44c9d65c4d7ddc2b17b719aa87c68d98062fb9c assets/worldtourmod/models/item/complex_test_item.json
 565b8f3af93f863545fb40e9c0301dd4a9238fee assets/worldtourmod/models/item/test_item.json
 b0c9cb199b2316345caad3a84af51700c53262b8 assets/worldtourmod/models/item/tour_wand.json

@@ -1,0 +1,6 @@
+{
+  "model": {
+    "type": "minecraft:model",
+    "model": "worldtourmod:item/complex_test_item"
+  }
+}
