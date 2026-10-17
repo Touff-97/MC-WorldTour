@@ -6,6 +6,7 @@ import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.creativemodtab.ModeCreativeTabs;
 import net.byhobby.worldtourmod.item.ModItems;
 import net.byhobby.worldtourmod.item.custom.ComplexTestItem;
+import net.byhobby.worldtourmod.tour.TourRide;
 import net.fabricmc.api.ModInitializer;
 
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
@@ -32,6 +33,7 @@ public class WorldTourMod implements ModInitializer {
 
 		GhostBlocks.register();
 		TourMarker.register();
+		TourRide.register();
 	}
 
 	public static Identifier id(String path) {

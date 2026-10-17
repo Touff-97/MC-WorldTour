@@ -5,6 +5,7 @@ import net.byhobby.worldtourmod.data.PathStore;
 import net.byhobby.worldtourmod.data.Pos;
 import net.byhobby.worldtourmod.data.TourBounds;
 import net.byhobby.worldtourmod.data.TourStore;
+import net.byhobby.worldtourmod.tour.TourRide;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
@@ -17,6 +18,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
@@ -53,9 +55,15 @@ public final class TourMarker {
 
     public static void register() {
         ServerTickEvents.END_SERVER_TICK.register(TourMarker::onTick);
-        // The marker cart can't be ridden or punched
-        UseEntityCallback.EVENT.register((player, level, hand, entity, hit) ->
-                isMarker(entity) ? InteractionResult.FAIL : InteractionResult.PASS);
+
+        UseEntityCallback.EVENT.register((player, level, hand, entity, hit) -> {
+            if (!isMarker(entity)) return InteractionResult.PASS;
+            if (hand == InteractionHand.MAIN_HAND && !level.isClientSide() && player instanceof ServerPlayer sp) {
+                TourRide.tryBoard(sp, entity);
+            }
+            return InteractionResult.SUCCESS;
+        });
+
         AttackEntityCallback.EVENT.register((player, level, hand, entity, hit) ->
                 isMarker(entity) ? InteractionResult.FAIL : InteractionResult.PASS);
     }
@@ -89,11 +97,14 @@ public final class TourMarker {
                 String dim = level.dimension().identifier().toString();
                 AABB box = player.getBoundingBox().inflate(160);
                 for (Entity e : level.getEntities((Entity) null, box, TourMarker::isMarker)) {
+                    if (TourRide.isActiveCart(e)) continue;
                     boolean keep = l.cartPos() != null && l.cartPos().dim().equals(dim)
                             && e.position().distanceToSqr(cartVec(l.cartPos())) < 9.0;
                     if (!keep) e.discard();
                 }
             }
+
+            if (TourRide.hasSession()) return;
 
             // 2. Make sure exactly one cart sits at the start
             Pos cp = l.cartPos();
@@ -105,6 +116,7 @@ public final class TourMarker {
 
             Vec3 target = cartVec(cp);
             List<Entity> found = new ArrayList<>(level.getEntities((Entity) null, new AABB(bp).inflate(3), TourMarker::isMarker));
+            System.out.println("[tour] tick: found markers=" + found.size() + " session=" + TourRide.hasSession());
             if (found.isEmpty()) {
                 Entity cart = minecartType().create(level, EntitySpawnReason.COMMAND);
                 if (cart == null) return;
