@@ -2,6 +2,7 @@ package net.byhobby.worldtourmod.item.custom;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import net.byhobby.worldtourmod.client.GhostBlocks;
 import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.data.PathData;
 import net.byhobby.worldtourmod.data.PathStore;
@@ -107,6 +108,7 @@ public class ComplexTestItem extends Item {
         PathData data = new PathData(newId("path"), points);
         try {
             PathStore.save(data);
+            GhostBlocks.invalidate();
             stack.remove(ModDataComponents.PATH_POINTS);
             say(player, "Path saved (" + points.size() + " points): " + data.id(), false);
             reportRelink(player);

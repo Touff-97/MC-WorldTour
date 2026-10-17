@@ -1,5 +1,6 @@
 package net.byhobby.worldtourmod;
 
+import net.byhobby.worldtourmod.client.GhostBlocks;
 import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.creativemodtab.ModeCreativeTabs;
 import net.byhobby.worldtourmod.item.ModItems;
@@ -27,6 +28,8 @@ public class WorldTourMod implements ModInitializer {
 		ModItems.registerModItems();
 
 		AttackBlockCallback.EVENT.register(ComplexTestItem::onAttackBlock);
+
+		GhostBlocks.register();
 	}
 
 	public static Identifier id(String path) {

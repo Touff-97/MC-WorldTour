@@ -40,9 +40,15 @@ public final class PathStore {
     private static <T> List<T> loadAll(Path dir, Class<T> type) throws IOException {
         List<T> out = new ArrayList<>();
         if (!Files.isDirectory(dir)) return out;
+
         try (Stream<Path> files = Files.list(dir)) {
             for (Path f : files.filter(f -> f.toString().endsWith(".json")).toList()) {
-                out.add(GSON.fromJson(Files.readString(f), type));
+                try {
+                    T value = GSON.fromJson(Files.readString(f), type);
+                    if (value != null) out.add(value);
+                } catch (Exception e) {
+                    System.err.println("[worldtourmod] Skipping unreadable file " + f + ": " + e);
+                }
             }
         }
         return out;
