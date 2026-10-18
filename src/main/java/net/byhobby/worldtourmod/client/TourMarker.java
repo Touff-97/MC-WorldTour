@@ -158,12 +158,6 @@ public final class TourMarker {
                 cartPos = tb.start();
                 yaw = (float) Math.toDegrees(Math.atan2(dir.getStepZ(), dir.getStepX())); // vanilla convention
             }
-
-            List<BlockPos> finishBlocks = tb.finish() == null ? null : blocksFor(paths, tb.finish(), false);
-            if (finishBlocks != null) {
-                Direction dir = heading(finishBlocks, false);
-                rails.computeIfAbsent(tb.finish().dim(), k -> new HashMap<>()).putAll(railLine(finishBlocks, false, dir));
-            }
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -236,6 +230,7 @@ public final class TourMarker {
             else if (prev != null && prev.getY() > p.getY()) shape = ascending(dir.getOpposite());
             else shape = dir.getAxis() == Direction.Axis.X ? RailShape.EAST_WEST : RailShape.NORTH_SOUTH;
 
+            out.put(p.above(Y_OFFSET - 1), Blocks.STONE_BRICKS.defaultBlockState());
             out.put(p.above(Y_OFFSET), Blocks.RAIL.defaultBlockState().setValue(BlockStateProperties.RAIL_SHAPE, shape));
         }
         return out;

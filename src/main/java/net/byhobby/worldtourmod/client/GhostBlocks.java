@@ -6,6 +6,7 @@ import net.byhobby.worldtourmod.data.PathRouter;
 import net.byhobby.worldtourmod.data.PathStore;
 import net.byhobby.worldtourmod.data.Pos;
 import net.byhobby.worldtourmod.item.custom.ComplexTestItem;
+import net.byhobby.worldtourmod.tour.TourRide;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -94,9 +95,11 @@ public final class GhostBlocks {
         if (tool != null) desired.putAll(buildDesired(player, tool, dim));
         else DRAFTS.remove(player.getUUID());
 
-        // Tour start/finish rails: everyone sees them, and they win over path ghosts
-        addNear(desired, TourMarker.layout().rails().getOrDefault(dim, Map.of()),
-                player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
+        // Tour rails: the static start rails when idle, a window around the cart during a tour
+        Map<BlockPos, BlockState> tourRails = TourRide.hasSession()
+                ? TourRide.railsFor(dim)
+                : TourMarker.layout().rails().getOrDefault(dim, Map.of());
+        addNear(desired, tourRails, player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
 
         for (BlockPos pos : old.keySet()) {
             if (!desired.containsKey(pos)) send(player, pos, level.getBlockState(pos));
