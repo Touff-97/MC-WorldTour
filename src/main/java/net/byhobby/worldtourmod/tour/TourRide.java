@@ -4,8 +4,12 @@ import net.byhobby.worldtourmod.client.TourMarker;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
@@ -16,24 +20,37 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class TourRide {
-    private static final double YAW_OFFSET = 0.0;   // set to 90 if the cart looks sideways
-    private static final int RAILS_AHEAD = 8;       // ghost rails shown in front of the cart
-    private static final int EXIT_BLOCKS = 12;      // how far the empty cart rolls on after the finish
-    private static final int PROMPT_INTERVAL = 20;  // ticks between "get off" prompts
+    private static final double YAW_OFFSET = 0.0;
+    private static final int RAILS_AHEAD = 8;
+    private static final int EXIT_BLOCKS = 12;
+    private static final int PROMPT_INTERVAL = 20;
+
+    // Dimension hopping
+    private static final int PRELOAD_BLOCKS = 40;    // start loading the destination this far before the portal
+    private static final int PRELOAD_RADIUS = 2;     // chunks around the destination (2 = 5x5)
+    private static final int MAX_WAIT_TICKS = 100;   // give up waiting for the destination after this
+    private static final int ARRIVAL_HOLD_TICKS = 20; // cart waits after arriving so the client can load
 
     private enum Phase { RIDING, ARRIVED, LEAVING }
 
+    private record Forced(ServerLevel level, int cx, int cz) {}
+
     private static final class Session {
-        final Entity cart;
-        final List<TourRoute.Segment> segments;   // own copy: the exit stretch gets appended
+        Entity cart;
+        final List<TourRoute.Segment> segments;
         Phase phase = Phase.RIDING;
         int seg = 0, idx = 0;
-        double t = 0;              // 0..1 between block idx and idx+1
+        double t = 0;
         double travelled = 0;
         long ticksRiding = 0;
         int promptTicks = 0;
+        int hold = 0;              // arrival hold, in ticks
+        int waited = 0;            // ticks spent waiting at a portal for the destination
+        int preloadedFor = -1;     // segment index whose destination is already being loaded
+        final List<Forced> forced = new ArrayList<>();
         float yaw;
         Vec3 last;
 
@@ -46,6 +63,7 @@ public final class TourRide {
     }
 
     private static Session session = null;
+    private static MinecraftServer server = null;
 
     private TourRide() {}
 
@@ -88,16 +106,25 @@ public final class TourRide {
 
     // ---------- Tick ----------
 
-    private static void tick(MinecraftServer server) {
+    private static void tick(MinecraftServer srv) {
+        server = srv;
         Session s = session;
         if (s == null) return;
         try {
-            if (s.cart.isRemoved()) { session = null; return; }
+            if (s.cart.isRemoved()) { releaseForced(s); session = null; return; }
 
             switch (s.phase) {
-                case RIDING -> { if (s.cart.isVehicle()) advance(s); }   // nobody inside = paused
+                case RIDING -> {
+                    if (s.cart.isVehicle()) {                 // nobody inside = paused
+                        if (s.hold > 0) {
+                            if (--s.hold == 0) releaseForced(s);
+                        } else {
+                            advance(s);
+                        }
+                    }
+                }
                 case ARRIVED -> {
-                    if (!s.cart.isVehicle()) beginLeaving(s);            // rider got off
+                    if (!s.cart.isVehicle()) beginLeaving(s);
                     else if (s.promptTicks++ % PROMPT_INTERVAL == 0) promptRiders(s);
                 }
                 case LEAVING -> advance(s);
@@ -105,12 +132,14 @@ public final class TourRide {
             if (session == s) place(s);
         } catch (Exception e) {
             e.printStackTrace();
+            releaseForced(s);
             session = null;
         }
     }
 
     private static void advance(Session s) {
         s.ticksRiding++;
+        preloadAhead(s);
         List<TourRoute.Segment> segments = s.segments;
 
         TourRoute.Segment first = segments.get(s.seg);
@@ -123,7 +152,13 @@ public final class TourRide {
 
             if (s.idx >= b.size() - 1) {                       // end of this path
                 if (s.seg + 1 >= segments.size()) { onRouteEnd(s); return; }
-                s.seg++; s.idx = 0; s.t = 0;                   // transition: jump to the next path
+
+                TourRoute.Segment next = segments.get(s.seg + 1);
+                if (!next.dim().equals(segments.get(s.seg).dim())) {
+                    crossDimension(s, next);                   // may wait, hop or abort
+                    return;
+                }
+                s.seg++; s.idx = 0; s.t = 0;                   // same-dimension transition
                 continue;
             }
 
@@ -139,10 +174,92 @@ public final class TourRide {
         }
     }
 
+    // ---------- Dimension hopping ----------
+
+    private static ServerLevel levelOf(String dim) {
+        return server.getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(dim)));
+    }
+
+    /** Starts loading the destination when a dimension change is close. */
+    private static void preloadAhead(Session s) {
+        if (s.preloadedFor == s.seg || s.seg + 1 >= s.segments.size()) return;
+        TourRoute.Segment cur = s.segments.get(s.seg), next = s.segments.get(s.seg + 1);
+        if (next.dim().equals(cur.dim())) return;
+        if (cur.blocks().size() - 1 - s.idx > PRELOAD_BLOCKS) return;
+
+        ServerLevel target = levelOf(next.dim());
+        if (target == null) return;
+        BlockPos dest = next.blocks().get(0);
+        int cx = dest.getX() >> 4, cz = dest.getZ() >> 4;
+        for (int dx = -PRELOAD_RADIUS; dx <= PRELOAD_RADIUS; dx++) {
+            for (int dz = -PRELOAD_RADIUS; dz <= PRELOAD_RADIUS; dz++) {
+                target.setChunkForced(cx + dx, cz + dz, true);
+                s.forced.add(new Forced(target, cx + dx, cz + dz));
+            }
+        }
+        s.preloadedFor = s.seg;
+    }
+
+    private static void releaseForced(Session s) {
+        for (Forced f : s.forced) f.level().setChunkForced(f.cx(), f.cz(), false);
+        s.forced.clear();
+    }
+
+    private static void crossDimension(Session s, TourRoute.Segment next) {
+        ServerLevel target = levelOf(next.dim());
+        if (target == null) { abort(s, "dimension " + next.dim() + " is not loaded"); return; }
+
+        preloadAhead(s);
+        BlockPos start = next.blocks().get(0);
+
+        // Wait at the portal until the destination is ready (or we give up waiting)
+        if (!target.hasChunkAt(start) && s.waited++ < MAX_WAIT_TICKS) return;
+        s.waited = 0;
+        target.getChunk(start.getX() >> 4, start.getZ() >> 4); // makes sure it really is loaded
+
+        BlockPos second = next.blocks().size() > 1 ? next.blocks().get(1) : start;
+        int dx = second.getX() - start.getX(), dz = second.getZ() - start.getZ();
+        float yaw = (dx != 0 || dz != 0) ? (float) (Math.toDegrees(Math.atan2(dz, dx)) + YAW_OFFSET) : s.yaw;
+        Vec3 pos = new Vec3(start.getX() + 0.5, start.getY() + TourMarker.Y_OFFSET + 0.0625, start.getZ() + 0.5);
+
+        List<ServerPlayer> riders = new ArrayList<>();
+        for (Entity e : s.cart.getPassengers()) if (e instanceof ServerPlayer sp) riders.add(sp);
+
+        Entity newCart = TourMarker.spawnCart(target, pos, yaw);
+        if (newCart == null) { abort(s, "could not create the cart in the new dimension"); return; }
+
+        Entity old = s.cart;
+        for (ServerPlayer sp : riders) {
+            sp.stopRiding();
+            sp.teleportTo(target, pos.x, pos.y, pos.z, Set.of(), yaw, 0.0f, true);
+            sp.startRiding(newCart);
+        }
+        old.discard();
+
+        s.cart = newCart;
+        s.seg++; s.idx = 0; s.t = 0;
+        s.last = pos;
+        s.yaw = yaw;
+        s.hold = ARRIVAL_HOLD_TICKS;
+    }
+
+    private static void abort(Session s, String why) {
+        for (Entity passenger : new ArrayList<>(s.cart.getPassengers())) {
+            if (passenger instanceof ServerPlayer sp) say(sp, "Tour stopped: " + why, false);
+            passenger.stopRiding();
+        }
+        releaseForced(s);
+        s.cart.discard();
+        session = null;
+    }
+
+    // ---------- End of route ----------
+
     private static void onRouteEnd(Session s) {
-        if (s.phase == Phase.LEAVING) {      // finished rolling away: the cart is gone
+        if (s.phase == Phase.LEAVING) {
             s.cart.discard();
-            session = null;                  // TourMarker puts a fresh cart at the start
+            releaseForced(s);
+            session = null;
             return;
         }
         s.phase = Phase.ARRIVED;
@@ -158,7 +275,6 @@ public final class TourRide {
         }
     }
 
-    /** Appends a straight stretch past the final block and sets the cart rolling along it. */
     private static void beginLeaving(Session s) {
         TourRoute.Segment lastSeg = s.segments.get(s.segments.size() - 1);
         List<BlockPos> blocks = lastSeg.blocks();
@@ -209,19 +325,19 @@ public final class TourRide {
 
     // ---------- Ghost rails that travel with the cart ----------
 
-    /** Rails from the cart's current block to RAILS_AHEAD blocks ahead (nothing behind it). */
     public static Map<BlockPos, BlockState> railsFor(String dim) {
         Session s = session;
         if (s == null) return Map.of();
         TourRoute.Segment cur = s.segments.get(s.seg);
         if (!cur.dim().equals(dim)) return Map.of();
 
-        BlockPos before = s.idx > 0 ? cur.blocks().get(s.idx - 1) : null; // shape context only
+        BlockPos before = s.idx > 0 ? cur.blocks().get(s.idx - 1) : null;
 
-        // Walk forward across segments (+1 block of context for the last rail's shape)
+        // Walk forward across segments, but never into another dimension
         List<BlockPos> line = new ArrayList<>();
         int si = s.seg, bi = s.idx;
         while (line.size() < RAILS_AHEAD + 2 && si < s.segments.size()) {
+            if (!s.segments.get(si).dim().equals(dim)) break;
             List<BlockPos> b = s.segments.get(si).blocks();
             if (bi < b.size()) line.add(b.get(bi++));
             else { si++; bi = 0; }
@@ -235,7 +351,6 @@ public final class TourRide {
             out.put(line.get(i).above(TourMarker.Y_OFFSET - 1), Blocks.STONE_BRICKS.defaultBlockState());
             out.put(line.get(i).above(TourMarker.Y_OFFSET), RailShapes.rail(prev, line.get(i), next));
         }
-
         return out;
     }
 

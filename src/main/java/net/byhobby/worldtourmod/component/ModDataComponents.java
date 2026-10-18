@@ -19,10 +19,10 @@ public class ModDataComponents {
                     .build());
 
     // Transition being drawn: 0 or 1 points (create_transition mode)
-    public static final DataComponentType<List<BlockPos>> TRANSITION_DRAFT = register("transition_draft",
-            DataComponentType.<List<BlockPos>>builder()
-                    .persistent(BlockPos.CODEC.listOf())
-                    .networkSynchronized(BlockPos.STREAM_CODEC.apply(ByteBufCodecs.list()))
+    public static final DataComponentType<List<DraftPoint>> TRANSITION_DRAFT = register("transition_draft",
+            DataComponentType.<List<DraftPoint>>builder()
+                    .persistent(DraftPoint.CODEC.listOf())
+                    .networkSynchronized(DraftPoint.STREAM_CODEC.apply(ByteBufCodecs.list()))
                     .build());
 
     // Current ToolMode ordinal

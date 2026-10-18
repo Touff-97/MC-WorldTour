@@ -43,9 +43,6 @@ public record TourRoute(List<Segment> segments, boolean reachesFinish, String pr
             if (t == null) {
                 return new TourRoute(segs, false, "No active transition at the end of " + cur.id() + ".");
             }
-            if (!t.to.dim().equals(end.dim())) {
-                return new TourRoute(segs, false, "Transition " + t.id + " crosses dimensions (not supported yet).");
-            }
             cur = startingAt(paths, t.to);
         }
         return new TourRoute(segs, false, "A transition leads to no path.");

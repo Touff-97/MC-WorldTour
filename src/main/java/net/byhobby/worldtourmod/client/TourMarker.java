@@ -118,13 +118,7 @@ public final class TourMarker {
             List<Entity> found = new ArrayList<>(level.getEntities((Entity) null, new AABB(bp).inflate(3), TourMarker::isMarker));
             System.out.println("[tour] tick: found markers=" + found.size() + " session=" + TourRide.hasSession());
             if (found.isEmpty()) {
-                Entity cart = minecartType().create(level, EntitySpawnReason.COMMAND);
-                if (cart == null) return;
-                cart.setPos(target);
-                cart.setYRot(l.cartYaw());
-                cart.setNoGravity(true);
-                cart.addTag(TAG);
-                level.addFreshEntity(cart);
+                spawnCart(level, target, l.cartYaw());
             } else {
                 for (int i = 0; i < found.size(); i++) {
                     Entity e = found.get(i);
@@ -178,7 +172,7 @@ public final class TourMarker {
     }
 
     /** Travel direction at the start (first horizontal step) or finish (last horizontal step). */
-    private static Direction heading(List<BlockPos> blocks, boolean atStart) {
+    static Direction heading(List<BlockPos> blocks, boolean atStart) {
         int n = blocks.size();
         if (atStart) {
             for (int i = 1; i < n; i++) {
@@ -243,5 +237,16 @@ public final class TourMarker {
             case EAST -> RailShape.ASCENDING_EAST;
             default -> RailShape.ASCENDING_WEST;
         };
+    }
+
+    public static Entity spawnCart(ServerLevel level, Vec3 pos, float yaw) {
+        Entity cart = minecartType().create(level, EntitySpawnReason.COMMAND);
+        if (cart == null) return null;
+        cart.setPos(pos);
+        cart.setYRot(yaw);
+        cart.setNoGravity(true);
+        cart.addTag(TAG);
+        level.addFreshEntity(cart);
+        return cart;
     }
 }

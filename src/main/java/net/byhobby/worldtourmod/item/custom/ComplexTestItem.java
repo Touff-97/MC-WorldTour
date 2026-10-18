@@ -3,6 +3,7 @@ package net.byhobby.worldtourmod.item.custom;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.byhobby.worldtourmod.client.GhostBlocks;
+import net.byhobby.worldtourmod.component.DraftPoint;
 import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.data.*;
 import net.minecraft.core.BlockPos;
@@ -161,28 +162,28 @@ public class ComplexTestItem extends Item {
     // ---------- create_transition ----------
 
     private static void addTransitionPoint(Level level, Player player, ItemStack stack, BlockPos pos) {
-        List<BlockPos> draft = new ArrayList<>(stack.getOrDefault(ModDataComponents.TRANSITION_DRAFT, List.of()));
-        draft.add(pos.immutable());
+        List<DraftPoint> draft = new ArrayList<>(stack.getOrDefault(ModDataComponents.TRANSITION_DRAFT, List.of()));
+        draft.add(new DraftPoint(dimensionOf(level), pos.immutable()));
 
         if (draft.size() < 2) {
             stack.set(ModDataComponents.TRANSITION_DRAFT, List.copyOf(draft));
-            say(player, "Transition exit set at " + pos.toShortString() + ". Now click the entrance.", true);
+            say(player, "Transition exit set at " + pos.toShortString() + " (" + dimensionOf(level)
+                    + "). Now click the entrance, in any dimension.", true);
             return;
         }
 
-        String dim = dimensionOf(level); // see implementation, currently does nothing
-        BlockPos a = draft.get(0), b = draft.get(1);
-
+        DraftPoint a = draft.get(0), b = draft.get(1);
         TransitionData t = new TransitionData();
         t.id = newId("transition");
-        t.from = new Pos(dimensionOfDraftStart(dim), a.getX(), a.getY(), a.getZ());
-        t.to = new Pos(dim, b.getX(), b.getY(), b.getZ());
+        t.from = new Pos(a.dim(), a.pos().getX(), a.pos().getY(), a.pos().getZ());
+        t.to = new Pos(b.dim(), b.pos().getX(), b.pos().getY(), b.pos().getZ());
         t.active = false;
 
         try {
             PathStore.save(t);
             stack.remove(ModDataComponents.TRANSITION_DRAFT);
             List<TransitionData> activated = PathStore.relink();
+            GhostBlocks.invalidate();
             boolean nowActive = activated.stream().anyMatch(x -> x.id.equals(t.id));
             say(player, "Transition " + t.id + (nowActive ? " saved and ACTIVE" : " saved (inactive, waiting for paths)"), false);
         } catch (IOException e) {
@@ -251,6 +252,7 @@ public class ComplexTestItem extends Item {
     private static void reportRelink(Player player) {
         try {
             List<TransitionData> activated = PathStore.relink();
+            GhostBlocks.invalidate();
             for (TransitionData t : activated) {
                 say(player, "Transition " + t.id + " is now ACTIVE", false);
             }
@@ -262,9 +264,6 @@ public class ComplexTestItem extends Item {
     private static String dimensionOf(Level level) {
         return level.dimension().identifier().toString(); // was .location() before 26.x
     }
-
-    // Placeholder, more work is needed to get cross dimension travel
-    private static String dimensionOfDraftStart(String currentDim) { return currentDim; }
 
     private static String newId(String prefix) {
         return prefix + "_" + UUID.randomUUID().toString().substring(0, 8);

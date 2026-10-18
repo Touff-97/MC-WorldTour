@@ -60,6 +60,7 @@ public final class GhostBlocks {
     /** Call after saving or deleting a path. */
     public static void invalidate() {
         TourMarker.invalidate();
+        PortalMarker.invalidate();
         savedCache = null;
         occupiedCache = null;
         version++;
@@ -100,6 +101,9 @@ public final class GhostBlocks {
                 ? TourRide.railsFor(dim)
                 : TourMarker.layout().rails().getOrDefault(dim, Map.of());
         addNear(desired, tourRails, player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
+        // Portals win over everything else; tool holders also see inactive ones
+        addNear(desired, PortalMarker.layout().forDim(dim, tool != null),
+                player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
 
         for (BlockPos pos : old.keySet()) {
             if (!desired.containsKey(pos)) send(player, pos, level.getBlockState(pos));
