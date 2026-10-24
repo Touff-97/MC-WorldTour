@@ -53,6 +53,14 @@ public final class PathStore {
         return out;
     }
 
+    public static void delete(PathData p) throws IOException {
+        Files.deleteIfExists(pathsDir().resolve(p.id() + ".json"));
+    }
+
+    public static void delete(TransitionData t) throws IOException {
+        Files.deleteIfExists(transitionsDir().resolve(t.id + ".json"));
+    }
+
     /**
      * Re-checks every transition against every path and updates links/active flags.
      * Returns the transitions that just became active.

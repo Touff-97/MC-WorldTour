@@ -1,6 +1,8 @@
 package net.byhobby.worldtourmod.tour;
 
+import net.byhobby.worldtourmod.client.PortalMarker;
 import net.byhobby.worldtourmod.client.TourMarker;
+import net.byhobby.worldtourmod.data.Pos;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -33,6 +35,9 @@ public final class TourRide {
     private static final int PRELOAD_RADIUS = 2;     // chunks around the destination (2 = 5x5)
     private static final int MAX_WAIT_TICKS = 100;   // give up waiting for the destination after this
     private static final int ARRIVAL_HOLD_TICKS = 20; // cart waits after arriving so the client can load
+
+    private static final double PORTAL_SHOW_AHEAD = 20.0;  // portal appears this many blocks before the cart reaches it
+    private static final double PORTAL_SHOW_BEHIND = 8.0;  // and stays this many blocks after the cart emerges
 
     private enum Phase { RIDING, ARRIVED, LEAVING }
 
@@ -144,7 +149,8 @@ public final class TourRide {
 
         TourRoute.Segment first = segments.get(s.seg);
         double remaining = TourSpeed.blocksPerTick(new TourSpeed.Progress(
-                first.pathId(), s.seg, s.idx, first.blocks().size(), s.travelled, s.ticksRiding));
+                first.pathId(), s.seg, s.idx, first.blocks().size(), s.travelled, s.ticksRiding))
+                * portalEase(s);
 
         int guard = 0;
         while (remaining > 0 && guard++ < 10_000) {
@@ -172,6 +178,58 @@ public final class TourRide {
                 remaining = 0;
             }
         }
+    }
+
+    // ---------- Portal easing and visibility ----------
+
+    /** The cart leaves this segment through a portal (the appended exit stretch has none). */
+    private static boolean portalAfter(Session s, int seg) {
+        return seg + 1 < s.segments.size() && !"exit".equals(s.segments.get(seg + 1).pathId());
+    }
+
+    /** The cart entered this segment through a portal. */
+    private static boolean portalBefore(Session s, int seg) {
+        return seg > 0 && !"exit".equals(s.segments.get(seg).pathId());
+    }
+
+    private static double distToEnd(Session s) {
+        int n = s.segments.get(s.seg).blocks().size();
+        return Math.max(0.0, (n - 1 - s.idx) - s.t);
+    }
+
+    private static double distFromStart(Session s) {
+        return s.idx + s.t;
+    }
+
+    /** 0..1 multiplier: slows into a portal, speeds up out of one. */
+    private static double portalEase(Session s) {
+        double d = Double.MAX_VALUE;
+        if (portalAfter(s, s.seg)) d = Math.min(d, distToEnd(s));
+        if (portalBefore(s, s.seg)) d = Math.min(d, distFromStart(s));
+        return TourSpeed.portalFactor(d);
+    }
+
+    /** Portals everyone should see right now: the one ahead and the one just left. */
+    public static Map<BlockPos, BlockState> portalsFor(String dim) {
+        Session s = session;
+        if (s == null) return Map.of();
+        TourRoute.Segment cur = s.segments.get(s.seg);
+        if (!cur.dim().equals(dim)) return Map.of();
+
+        Map<BlockPos, BlockState> out = new HashMap<>();
+        List<BlockPos> b = cur.blocks();
+
+        if (portalAfter(s, s.seg) && distToEnd(s) <= PORTAL_SHOW_AHEAD) {
+            BlockPos end = b.get(b.size() - 1);
+            PortalMarker.Portal p = PortalMarker.layout().find(new Pos(dim, end.getX(), end.getY(), end.getZ()), true);
+            if (p != null) out.putAll(p.blocks());
+        }
+        if (portalBefore(s, s.seg) && distFromStart(s) <= PORTAL_SHOW_BEHIND) {
+            BlockPos start = b.get(0);
+            PortalMarker.Portal p = PortalMarker.layout().find(new Pos(dim, start.getX(), start.getY(), start.getZ()), false);
+            if (p != null) out.putAll(p.blocks());
+        }
+        return out;
     }
 
     // ---------- Dimension hopping ----------

@@ -4,7 +4,9 @@ public enum ToolMode {
     CREATE_PATH("create_path"),
     CREATE_TRANSITION("create_transition"),
     CREATE_START("create_start"),
-    CREATE_FINISH("create_finish");
+    CREATE_FINISH("create_finish"),
+    ERASE("erase"),
+    TELEPORT_PATHS("teleport_paths");
 
     public final String id;
 

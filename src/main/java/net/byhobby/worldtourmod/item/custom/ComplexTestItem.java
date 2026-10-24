@@ -3,11 +3,18 @@ package net.byhobby.worldtourmod.item.custom;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.byhobby.worldtourmod.client.GhostBlocks;
+import net.byhobby.worldtourmod.client.TourMarker;
 import net.byhobby.worldtourmod.component.DraftPoint;
 import net.byhobby.worldtourmod.component.ModDataComponents;
 import net.byhobby.worldtourmod.data.*;
+import net.byhobby.worldtourmod.tour.TourRide;
+import net.byhobby.worldtourmod.tour.TourRoute;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -49,8 +56,13 @@ public class ComplexTestItem extends Item {
     // Air
     @Override
     public InteractionResult use(Level level, Player player, InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
         if (player.isShiftKeyDown()) {
-            cycleMode(level, player, player.getItemInHand(hand));
+            cycleMode(level, player, stack);
+            return InteractionResult.SUCCESS;
+        }
+        if (getMode(stack) == ToolMode.TELEPORT_PATHS) {
+            if (!level.isClientSide()) cyclePath(player, +1);
             return InteractionResult.SUCCESS;
         }
         return super.use(level, player, hand);
@@ -76,6 +88,8 @@ public class ComplexTestItem extends Item {
                 case CREATE_TRANSITION -> addTransitionPoint(level, player, stack, pos);
                 case CREATE_START -> setTourBound(level, player, pos, true);
                 case CREATE_FINISH -> setTourBound(level, player, pos, false);
+                case ERASE -> erasePath(level, player, pos);
+                case TELEPORT_PATHS -> cyclePath(player, +1);
             }
         }
         return InteractionResult.SUCCESS;
@@ -242,9 +256,142 @@ public class ComplexTestItem extends Item {
                         say(player, "Transition cancelled", true);
                     }
                 }
+                case ERASE -> {
+                    if (PENDING.remove(player.getUUID()) != null) say(player, "Erase cancelled", true);
+                }
+                case TELEPORT_PATHS -> cyclePath(player, -1);
             }
         }
         return InteractionResult.SUCCESS; // never break blocks with this item
+    }
+
+    // ---------- erase ----------
+
+    private record PendingErase(String pathId, long time) {}
+    private static final Map<UUID, PendingErase> PENDING = new HashMap<>();
+    private static final long CONFIRM_TICKS = 100; // 5 seconds
+
+    private static void erasePath(Level level, Player player, BlockPos pos) {
+        if (TourRide.hasSession()) {
+            say(player, "Can't erase while a tour is in progress.", true);
+            return;
+        }
+
+        String dim = dimensionOf(level);
+        try {
+            PathData target = null;
+            for (PathData p : PathStore.loadPaths()) {
+                if (p.points() == null || p.points().isEmpty() || !p.first().dim().equals(dim)) continue;
+                if (PathStore.blocksOf(p).contains(pos)) { target = p; break; }
+            }
+            if (target == null) {
+                PENDING.remove(player.getUUID());
+                say(player, "No path at this block.", true);
+                return;
+            }
+
+            final PathData path = target;
+            List<TransitionData> linked = PathStore.loadTransitions().stream()
+                    .filter(t -> t.from.equals(path.last()) || t.to.equals(path.first())
+                            || path.id().equals(t.fromPath) || path.id().equals(t.toPath))
+                    .toList();
+
+            long now = level.getGameTime();
+            PendingErase pending = PENDING.get(player.getUUID());
+            if (pending == null || !pending.pathId().equals(path.id()) || now - pending.time() > CONFIRM_TICKS) {
+                PENDING.put(player.getUUID(), new PendingErase(path.id(), now));
+                say(player, "Erase " + path.id() + " and " + linked.size()
+                        + " transition(s)? Right click again to confirm.", true);
+                return;
+            }
+            PENDING.remove(player.getUUID());
+
+            PathStore.delete(path);
+            for (TransitionData t : linked) PathStore.delete(t);
+
+            TourBounds tb = TourStore.get();
+            Pos start = path.first().equals(tb.start()) ? null : tb.start();
+            Pos finish = path.last().equals(tb.finish()) ? null : tb.finish();
+            if (!java.util.Objects.equals(start, tb.start()) || !java.util.Objects.equals(finish, tb.finish())) {
+                TourStore.save(new TourBounds(start, finish));
+            }
+
+            GhostBlocks.invalidate(); // also refreshes the start cart and portals
+            say(player, "Erased " + path.id() + " and " + linked.size() + " transition(s).", false);
+        } catch (IOException e) {
+            e.printStackTrace();
+            say(player, "Failed to erase!", false);
+        }
+    }
+
+    // ---------- teleport_paths ----------
+
+    private static final Map<UUID, String> LAST_VISITED = new HashMap<>();
+
+    private static void cyclePath(Player player, int step) {
+        if (!(player instanceof ServerPlayer sp)) return;
+        if (sp.isPassenger()) {
+            say(player, "Get out of the cart first.", true);
+            return;
+        }
+
+        try {
+            List<PathData> paths = orderedPaths();
+            if (paths.isEmpty()) {
+                say(player, "No paths saved yet.", true);
+                return;
+            }
+
+            String last = LAST_VISITED.get(sp.getUUID());
+            int cur = -1;
+            for (int i = 0; i < paths.size(); i++) {
+                if (paths.get(i).id().equals(last)) { cur = i; break; }
+            }
+            int next = cur == -1 ? (step > 0 ? 0 : paths.size() - 1)
+                    : Math.floorMod(cur + step, paths.size());
+
+            PathData p = paths.get(next);
+            Pos start = p.first();
+            ServerLevel target = sp.level().getServer()
+                    .getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(start.dim())));
+            if (target == null) {
+                say(player, "Dimension " + start.dim() + " is not loaded.", true);
+                return;
+            }
+
+            List<BlockPos> blocks = PathStore.blocksOf(p);
+            float yaw = blocks.isEmpty() ? sp.getYRot() : TourMarker.heading(blocks, true).toYRot();
+
+            sp.teleportTo(target, start.x() + 0.5, start.y() + TourMarker.Y_OFFSET, start.z() + 0.5,
+                    Set.of(), yaw, 0.0f, true);
+            LAST_VISITED.put(sp.getUUID(), p.id());
+            say(player, "Path " + (next + 1) + "/" + paths.size() + ": " + p.id() + " (" + start.dim() + ")", true);
+        } catch (Exception e) {
+            e.printStackTrace();
+            say(player, "Could not read the saved paths.", true);
+        }
+    }
+
+    /** Paths on the tour route first (in tour order), then the rest sorted by id. */
+    private static List<PathData> orderedPaths() throws IOException {
+        List<PathData> all = PathStore.loadPaths().stream()
+                .filter(p -> p.points() != null && !p.points().isEmpty())
+                .sorted(Comparator.comparing(PathData::id))
+                .toList();
+
+        List<PathData> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        try {
+            for (TourRoute.Segment seg : TourRoute.build().segments()) {
+                for (PathData p : all) {
+                    if (p.id().equals(seg.pathId()) && seen.add(p.id())) out.add(p);
+                }
+            }
+        } catch (Exception ignored) {
+            // no valid route yet: fall back to id order
+        }
+        for (PathData p : all) if (seen.add(p.id())) out.add(p);
+        return out;
     }
 
     // ---------- Helpers ----------

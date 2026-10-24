@@ -172,7 +172,7 @@ public final class TourMarker {
     }
 
     /** Travel direction at the start (first horizontal step) or finish (last horizontal step). */
-    static Direction heading(List<BlockPos> blocks, boolean atStart) {
+    public static Direction heading(List<BlockPos> blocks, boolean atStart) {
         int n = blocks.size();
         if (atStart) {
             for (int i = 1; i < n; i++) {

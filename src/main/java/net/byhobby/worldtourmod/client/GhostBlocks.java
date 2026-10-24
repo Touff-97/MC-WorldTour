@@ -102,8 +102,10 @@ public final class GhostBlocks {
                 : TourMarker.layout().rails().getOrDefault(dim, Map.of());
         addNear(desired, tourRails, player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
         // Portals win over everything else; tool holders also see inactive ones
-        addNear(desired, PortalMarker.layout().forDim(dim, tool != null),
-                player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
+        Map<BlockPos, BlockState> portals = tool != null
+                ? PortalMarker.layout().forHolder(dim)
+                : TourRide.portalsFor(dim);
+        addNear(desired, portals, player.blockPosition(), (double) TOUR_RADIUS * TOUR_RADIUS);
 
         for (BlockPos pos : old.keySet()) {
             if (!desired.containsKey(pos)) send(player, pos, level.getBlockState(pos));
